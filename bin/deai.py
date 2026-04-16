@@ -1304,6 +1304,15 @@ def check_ai_api(input_path: str, provider: str = "auto", verbose: bool = True) 
     Set env vars: export SIGHTENGINE_USER=xxx SIGHTENGINE_SECRET=xxx
     """
     import urllib.request
+    import ssl
+    # macOS Python often lacks root certificates
+    ssl_ctx = ssl.create_default_context()
+    try:
+        import certifi
+        ssl_ctx.load_verify_locations(certifi.where())
+    except ImportError:
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = ssl.CERT_NONE
 
     result = {"file": input_path, "provider": None, "ai_probability": None, "label": None, "raw": None}
 
@@ -1337,7 +1346,7 @@ def check_ai_api(input_path: str, provider: str = "auto", verbose: bool = True) 
                 headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
                 method="POST"
             )
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with urllib.request.urlopen(req, timeout=30, context=ssl_ctx) as resp:
                 data = json.loads(resp.read())
             ai_score = data.get("type", {}).get("ai_generated", 0)
             result["provider"] = "sightengine"
@@ -1379,7 +1388,7 @@ def check_ai_api(input_path: str, provider: str = "auto", verbose: bool = True) 
                 },
                 method="POST"
             )
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with urllib.request.urlopen(req, timeout=30, context=ssl_ctx) as resp:
                 data = json.loads(resp.read())
             confidence = data.get("confidence", 0)
             prediction = data.get("prediction", "unknown")
