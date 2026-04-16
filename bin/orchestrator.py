@@ -233,8 +233,32 @@ def smart_fix(input_path: str, output_path: str, camera: str = "iphone15",
     drop = scan_before["risk_score"] - scan_after["risk_score"]
     result["risk_drop"] = drop
 
+    # Step 7: SSIM quality check — ensure processing didn't degrade image too much
+    from PIL import Image
+    import numpy as np
+    orig_arr = np.array(Image.open(input_path).convert("RGB")).astype(float)
+    proc_arr = np.array(Image.open(output_path).convert("RGB")).astype(float)
+    # Resize if dimensions differ
+    if orig_arr.shape != proc_arr.shape:
+        proc_img = Image.open(output_path).convert("RGB").resize(
+            (orig_arr.shape[1], orig_arr.shape[0]), Image.LANCZOS)
+        proc_arr = np.array(proc_img).astype(float)
+    # Simple SSIM approximation (luminance + contrast)
+    mu_x, mu_y = np.mean(orig_arr), np.mean(proc_arr)
+    sig_x, sig_y = np.std(orig_arr), np.std(proc_arr)
+    sig_xy = np.mean((orig_arr - mu_x) * (proc_arr - mu_y))
+    C1, C2 = (0.01 * 255) ** 2, (0.03 * 255) ** 2
+    ssim = ((2 * mu_x * mu_y + C1) * (2 * sig_xy + C2)) / \
+           ((mu_x ** 2 + mu_y ** 2 + C1) * (sig_x ** 2 + sig_y ** 2 + C2))
+    result["ssim"] = round(ssim, 4)
+
+    quality_ok = ssim >= 0.85
+    result["quality_ok"] = quality_ok
+
     if verbose:
-        print(f"[6/6] Result: {scan_before['risk_score']}% → {scan_after['risk_score']}% (dropped {drop} pts)")
+        print(f"[6/7] Result: {scan_before['risk_score']}% → {scan_after['risk_score']}% (dropped {drop} pts)")
+        ssim_icon = "OK" if quality_ok else "!!"
+        print(f"[7/7] SSIM: {ssim:.4f} [{ssim_icon}] {'画质正常' if quality_ok else '画质损失较大,建议用 light 预设'}")
         print()
         print("Per-factor comparison:")
         for name in scan_before["checks"]:

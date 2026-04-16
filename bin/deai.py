@@ -1225,11 +1225,46 @@ def scan_image(input_path: str, verbose: bool = True) -> dict:
         detail = "scipy不可用,无法分析"
     check("隐形水印", wm_score, 13, detail)
 
+    # 8. Edge profile: AI images have more binary edges (strong/weak, lacking gradual transitions)
+    # Real cameras + lenses create soft edge profiles; AI diffusion creates unnaturally clean edges
+    dx = np.abs(np.diff(luma, axis=1))
+    strong_edges = np.sum(dx > 20)
+    medium_edges = np.sum((dx > 5) & (dx <= 20))
+    edge_ratio = strong_edges / max(medium_edges, 1)
+    # Real photos: 0.20-0.30, AI: 0.35-1.05+
+    if edge_ratio > 0.35:
+        edge_score = min(8, int((edge_ratio - 0.30) * 15))
+        detail = f"强弱边缘比={edge_ratio:.3f} (边缘太锐利/二值化)"
+    else:
+        edge_score = 0
+        detail = f"强弱边缘比={edge_ratio:.3f} (自然过渡)"
+    check("边缘过渡", edge_score, 8, detail)
+
+    # 9. Channel correlation: real photos have very high RGB correlation (~0.95+)
+    # because real illumination affects all channels similarly.
+    # AI images often have lower correlation (0.45-0.90) from independent channel generation.
+    r_flat = img_array[:,:,0].flatten().astype(float)
+    g_flat = img_array[:,:,1].flatten().astype(float)
+    b_flat = img_array[:,:,2].flatten().astype(float)
+    # Subsample for speed
+    step = max(1, len(r_flat) // 100000)
+    rg_corr = np.corrcoef(r_flat[::step], g_flat[::step])[0, 1]
+    rb_corr = np.corrcoef(r_flat[::step], b_flat[::step])[0, 1]
+    avg_corr = (rg_corr + rb_corr) / 2
+    # Real: > 0.94, AI: 0.45-0.90
+    if avg_corr < 0.92:
+        corr_score = min(8, int((0.92 - avg_corr) * 20))
+        detail = f"通道相关={avg_corr:.3f} (RGB不自然,可能独立生成)"
+    else:
+        corr_score = 0
+        detail = f"通道相关={avg_corr:.3f} (自然光照)"
+    check("通道相关性", corr_score, 8, detail)
+
     # Calculate overall risk
     risk_pct = total_score / max(max_score, 1) * 100
     if risk_pct >= 60:
         report["risk_level"] = "HIGH"
-    elif risk_pct >= 35:
+    elif risk_pct >= 30:
         report["risk_level"] = "MEDIUM"
     else:
         report["risk_level"] = "LOW"
