@@ -15,7 +15,6 @@ import webbrowser
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import parse_qs
-import base64
 import uuid
 import zipfile
 import io
@@ -1621,10 +1620,6 @@ class DeAIHandler(BaseHTTPRequestHandler):
                 # Store output for download
                 output_id = file_id
                 DeAIHandler.outputs[output_id] = output_path
-
-                # Read output as base64 for preview
-                with open(output_path, 'rb') as f:
-                    output_b64 = base64.b64encode(f.read()).decode()
 
                 self._json_response(200, {
                     "success": True,

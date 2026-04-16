@@ -103,7 +103,7 @@ def classify_image(input_path: str) -> dict:
     # --- Watermark detection ---
     has_watermark = False
     try:
-        candidates = deai._detect_watermark_candidates(img)
+        candidates = deai._detect_watermark_candidates(np.array(img))
         has_watermark = len(candidates) > 0
     except Exception:
         pass

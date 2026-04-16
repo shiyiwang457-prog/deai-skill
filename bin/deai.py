@@ -14,8 +14,11 @@ Usage:
 """
 
 import argparse
+import io
 import json
 import os
+
+IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tiff', '.tif'}
 import struct
 import sys
 import tempfile
@@ -1243,13 +1246,13 @@ def scan_image(input_path: str, verbose: bool = True) -> dict:
     # 9. Channel correlation: real photos have very high RGB correlation (~0.95+)
     # because real illumination affects all channels similarly.
     # AI images often have lower correlation (0.45-0.90) from independent channel generation.
-    r_flat = img_array[:,:,0].flatten().astype(float)
-    g_flat = img_array[:,:,1].flatten().astype(float)
-    b_flat = img_array[:,:,2].flatten().astype(float)
-    # Subsample for speed
-    step = max(1, len(r_flat) // 100000)
-    rg_corr = np.corrcoef(r_flat[::step], g_flat[::step])[0, 1]
-    rb_corr = np.corrcoef(r_flat[::step], b_flat[::step])[0, 1]
+    # Subsample 2D before flatten to avoid 3x full H*W float allocations
+    sy, sx = max(1, h // 300), max(1, w // 300)
+    r_sub = img_array[::sy, ::sx, 0].ravel().astype(float)
+    g_sub = img_array[::sy, ::sx, 1].ravel().astype(float)
+    b_sub = img_array[::sy, ::sx, 2].ravel().astype(float)
+    rg_corr = np.corrcoef(r_sub, g_sub)[0, 1]
+    rb_corr = np.corrcoef(r_sub, b_sub)[0, 1]
     avg_corr = (rg_corr + rb_corr) / 2
     # Real: > 0.94, AI: 0.45-0.90
     if avg_corr < 0.92:
@@ -1487,31 +1490,14 @@ def simulate_double_compression(img: Image.Image, quality1: int = 85,
     AI images straight from the generator have ZERO JPEG compression history.
     This simulates realistic double-compression artifacts.
     """
-    buf1 = tempfile.NamedTemporaryFile(suffix='.jpg', delete=False)
-    buf2 = tempfile.NamedTemporaryFile(suffix='.jpg', delete=False)
-    try:
-        # First compression (simulates camera or first platform save)
-        img.save(buf1.name, format='JPEG', quality=quality1, subsampling='4:2:0')
-        buf1.close()
-
-        # Re-open and second compression (simulates re-upload/re-save)
-        img2 = Image.open(buf1.name).convert('RGB')
-        img2.save(buf2.name, format='JPEG', quality=quality2, subsampling='4:2:0')
-        buf2.close()
-
-        result = Image.open(buf2.name).convert('RGB')
-        # Force load into memory before cleanup
-        result.load()
-        return result
-    finally:
-        try:
-            os.unlink(buf1.name)
-        except OSError:
-            pass
-        try:
-            os.unlink(buf2.name)
-        except OSError:
-            pass
+    buf1 = io.BytesIO()
+    img.save(buf1, format='JPEG', quality=quality1, subsampling='4:2:0')
+    buf1.seek(0)
+    img2 = Image.open(buf1).convert('RGB')
+    buf2 = io.BytesIO()
+    img2.save(buf2, format='JPEG', quality=quality2, subsampling='4:2:0')
+    buf2.seek(0)
+    return Image.open(buf2).convert('RGB')
 
 
 # ---------------------------------------------------------------------------
@@ -1850,7 +1836,7 @@ Examples:
     if args.scan:
         use_verbose = not args.json
         if os.path.isdir(args.input):
-            IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tiff', '.tif'}
+
             input_dir = Path(args.input)
             image_files = sorted(
                 f for f in input_dir.iterdir()
@@ -1883,7 +1869,7 @@ Examples:
 
     # --- Batch mode: input is a directory ---
     if os.path.isdir(args.input):
-        IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tiff', '.tif'}
+
         input_dir = Path(args.input)
         image_files = sorted(
             f for f in input_dir.iterdir()
