@@ -351,7 +351,7 @@ Examples:
   orchestrator.py classify photo.png
 """)
 
-    parser.add_argument("command", choices=["auto", "scan", "process", "web", "classify"],
+    parser.add_argument("command", choices=["auto", "scan", "process", "web", "classify", "check"],
                         help="Command to run")
     parser.add_argument("input", nargs="?", help="Input image or directory")
     parser.add_argument("-o", "--output", help="Output path")
@@ -378,6 +378,13 @@ Examples:
     if not os.path.exists(args.input):
         print(f"Error: {args.input} not found", file=sys.stderr)
         sys.exit(1)
+
+    # --- check (external API) ---
+    if args.command == "check":
+        result = deai.check_ai_api(args.input, verbose=True)
+        if args.json:
+            print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
+        return
 
     # --- classify ---
     if args.command == "classify":

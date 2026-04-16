@@ -1288,6 +1288,127 @@ def scan_image(input_path: str, verbose: bool = True) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# External AI detection API check
+# ---------------------------------------------------------------------------
+
+def check_ai_api(input_path: str, provider: str = "auto", verbose: bool = True) -> dict:
+    """
+    Check image against external AI detection APIs for a more realistic
+    assessment of platform detection risk (closer to what Xiaohongshu/Douyin use).
+
+    Supported providers:
+      - sightengine: SightEngine genai model (free 500/mo, needs SIGHTENGINE_USER + SIGHTENGINE_SECRET)
+      - isitai: IsItAI API (free 5/mo, needs ISITAI_TOKEN)
+      - auto: tries each configured provider in order
+
+    Set env vars: export SIGHTENGINE_USER=xxx SIGHTENGINE_SECRET=xxx
+    """
+    import urllib.request
+
+    result = {"file": input_path, "provider": None, "ai_probability": None, "label": None, "raw": None}
+
+    # --- SightEngine ---
+    se_user = os.environ.get("SIGHTENGINE_USER")
+    se_secret = os.environ.get("SIGHTENGINE_SECRET")
+    if se_user and se_secret and provider in ("auto", "sightengine"):
+        try:
+            if verbose:
+                print(f"Checking with SightEngine...")
+            import mimetypes
+            boundary = "----DeAIBoundary"
+            filename = os.path.basename(input_path)
+            mime = mimetypes.guess_type(input_path)[0] or "image/jpeg"
+            with open(input_path, "rb") as f:
+                file_data = f.read()
+            body = (
+                f"--{boundary}\r\n"
+                f"Content-Disposition: form-data; name=\"models\"\r\n\r\ngenai\r\n"
+                f"--{boundary}\r\n"
+                f"Content-Disposition: form-data; name=\"api_user\"\r\n\r\n{se_user}\r\n"
+                f"--{boundary}\r\n"
+                f"Content-Disposition: form-data; name=\"api_secret\"\r\n\r\n{se_secret}\r\n"
+                f"--{boundary}\r\n"
+                f"Content-Disposition: form-data; name=\"media\"; filename=\"{filename}\"\r\n"
+                f"Content-Type: {mime}\r\n\r\n"
+            ).encode() + file_data + f"\r\n--{boundary}--\r\n".encode()
+            req = urllib.request.Request(
+                "https://api.sightengine.com/1.0/check.json",
+                data=body,
+                headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+                method="POST"
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read())
+            ai_score = data.get("type", {}).get("ai_generated", 0)
+            result["provider"] = "sightengine"
+            result["ai_probability"] = round(ai_score * 100, 1)
+            result["label"] = "AI" if ai_score > 0.5 else "REAL"
+            result["raw"] = data
+            if verbose:
+                icon = "!!" if ai_score > 0.5 else "OK"
+                print(f"  [{icon}] SightEngine: {result['ai_probability']}% AI ({result['label']})")
+            return result
+        except Exception as e:
+            if verbose:
+                print(f"  SightEngine error: {e}")
+            if provider == "sightengine":
+                result["error"] = str(e)
+                return result
+
+    # --- IsItAI ---
+    isitai_token = os.environ.get("ISITAI_TOKEN")
+    if isitai_token and provider in ("auto", "isitai"):
+        try:
+            if verbose:
+                print(f"Checking with IsItAI...")
+            boundary = "----DeAIBoundary"
+            filename = os.path.basename(input_path)
+            with open(input_path, "rb") as f:
+                file_data = f.read()
+            body = (
+                f"--{boundary}\r\n"
+                f"Content-Disposition: form-data; name=\"image\"; filename=\"{filename}\"\r\n"
+                f"Content-Type: image/jpeg\r\n\r\n"
+            ).encode() + file_data + f"\r\n--{boundary}--\r\n".encode()
+            req = urllib.request.Request(
+                "https://api.isitai.com/v2/detect",
+                data=body,
+                headers={
+                    "Content-Type": f"multipart/form-data; boundary={boundary}",
+                    "Authorization": f"Bearer {isitai_token}",
+                },
+                method="POST"
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read())
+            confidence = data.get("confidence", 0)
+            prediction = data.get("prediction", "unknown")
+            result["provider"] = "isitai"
+            result["ai_probability"] = round(confidence, 1)
+            result["label"] = prediction.upper()
+            result["raw"] = data
+            if verbose:
+                icon = "!!" if prediction == "ai" else "OK"
+                print(f"  [{icon}] IsItAI: {confidence}% confidence ({prediction})")
+            return result
+        except Exception as e:
+            if verbose:
+                print(f"  IsItAI error: {e}")
+            if provider == "isitai":
+                result["error"] = str(e)
+                return result
+
+    # No provider configured
+    if result["provider"] is None:
+        result["error"] = "No API configured. Set: SIGHTENGINE_USER+SIGHTENGINE_SECRET or ISITAI_TOKEN"
+        if verbose:
+            print(f"  [!] {result['error']}")
+            print(f"      SightEngine (free 500/mo): https://sightengine.com")
+            print(f"      IsItAI (free 5/mo): https://isitai.com")
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Invisible watermark disruption
 # ---------------------------------------------------------------------------
 
@@ -1825,6 +1946,8 @@ Examples:
     parser.add_argument("--json", action="store_true", help="Output report as JSON")
     parser.add_argument("--scan", action="store_true",
                         help="Scan image for AI detection risk (no processing, report only)")
+    parser.add_argument("--check-api", action="store_true",
+                        help="Check with external AI detection API (needs SIGHTENGINE_USER+SECRET or ISITAI_TOKEN)")
 
     args = parser.parse_args()
 
@@ -1833,6 +1956,13 @@ Examples:
         sys.exit(1)
 
     # --- Scan-only mode ---
+    # --- check-api mode ---
+    if args.check_api:
+        result = check_ai_api(args.input, verbose=True)
+        if args.json:
+            print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
+        sys.exit(0)
+
     if args.scan:
         use_verbose = not args.json
         if os.path.isdir(args.input):
