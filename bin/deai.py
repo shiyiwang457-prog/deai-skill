@@ -1055,6 +1055,13 @@ def scan_image(input_path: str, verbose: bool = True) -> dict:
     except Exception:
         exif_score = 15
         detail = "No EXIF data"
+    # EXIF penalty cap: JPEG images often have EXIF stripped by social media platforms.
+    # A missing EXIF on a JPEG is weak evidence (could be platform re-upload), so cap at 8.
+    # Only PNG/WebP with no EXIF gets the full penalty (AI tools output these natively).
+    ext = os.path.splitext(input_path)[1].lower()
+    if ext in ('.jpg', '.jpeg') and exif_score > 8:
+        exif_score = 8
+        detail += " (JPEG — 可能被平台剥离EXIF,降低权重)"
     check("EXIF 元数据", exif_score, 15, detail)
 
     # 2. Noise uniformity
@@ -1142,13 +1149,15 @@ def scan_image(input_path: str, verbose: bool = True) -> dict:
         if HAS_SCIPY:
             smooth = ndimage.gaussian_filter1d(hist_norm.astype(float), sigma=5)
             roughness = np.mean(np.abs(hist_norm - smooth))
-            if roughness < 0.0005:
+            if roughness < 0.00035:
                 hist_score += 3
                 hist_details.append(f"{ch_name}太光滑({roughness:.5f})")
         # Check for unnatural gaps or spikes
+        # Note: real photos after platform re-compression also fill all bins,
+        # so this is a very weak signal. Only flag if literally zero empty bins.
         zero_bins = np.sum(hist == 0)
-        if zero_bins < 5:
-            hist_score += 1  # AI images often fill all bins uniformly
+        if zero_bins == 0:
+            hist_score += 1  # very weak signal — all 256 bins populated
 
     detail = "; ".join(hist_details) if hist_details else "色彩分布正常"
     if hist_score == 0:
