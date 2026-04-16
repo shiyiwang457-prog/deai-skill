@@ -1288,6 +1288,240 @@ def scan_image(input_path: str, verbose: bool = True) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# P3: Adversarial attack against neural network AI detectors
+# ---------------------------------------------------------------------------
+
+def adversarial_attack(input_path: str, output_path: str,
+                       target_score: float = 0.40, max_queries: int = 25,
+                       epsilon: float = 4.0, block_size: int = 64,
+                       verbose: bool = True) -> dict:
+    """
+    Black-box adversarial attack using SimBA-like approach.
+    Adds imperceptible perturbations that fool neural network AI detectors
+    (SightEngine, Hive, etc.) without changing visual quality.
+
+    Algorithm:
+    1. Start with input image
+    2. Pick a random block (64x64)
+    3. Add a random direction perturbation (epsilon pixels)
+    4. Query the detection API
+    5. If AI score dropped → keep the perturbation
+    6. If AI score rose → try the opposite direction
+    7. If neither helps → discard and try next block
+    8. Repeat until target score reached or budget exhausted
+
+    Requires SIGHTENGINE_USER + SIGHTENGINE_SECRET env vars.
+    Budget: ~15-25 API calls per image.
+    """
+    from PIL import Image
+
+    img = Image.open(input_path).convert("RGB")
+    img_array = np.array(img).astype(np.float64)
+    h, w, c = img_array.shape
+    best_array = img_array.copy()
+
+    result = {
+        "input": input_path,
+        "output": output_path,
+        "queries_used": 0,
+        "initial_score": None,
+        "final_score": None,
+        "success": False,
+        "perturbation_l2": 0,
+    }
+
+    # Get initial score
+    _save_temp(best_array, output_path)
+    initial = check_ai_api(output_path, verbose=False)
+    if initial.get("error"):
+        if verbose:
+            print(f"API error: {initial['error']}")
+        result["error"] = initial["error"]
+        return result
+
+    current_score = initial["ai_probability"] / 100.0
+    result["initial_score"] = round(current_score * 100, 1)
+    result["queries_used"] = 1
+
+    if verbose:
+        print(f"[adversarial] Start: {current_score*100:.1f}% AI, target: <{target_score*100:.0f}%")
+        print(f"[adversarial] Budget: {max_queries} queries, epsilon: {epsilon}, block: {block_size}x{block_size}")
+
+    if current_score <= target_score:
+        result["final_score"] = result["initial_score"]
+        result["success"] = True
+        if verbose:
+            print(f"[adversarial] Already below target!")
+        return result
+
+    # Iterative attack
+    for i in range(max_queries - 1):
+        # Random block position
+        by = np.random.randint(0, max(1, h - block_size))
+        bx = np.random.randint(0, max(1, w - block_size))
+        bh = min(block_size, h - by)
+        bw = min(block_size, w - bx)
+
+        # Random direction in pixel space (normalized)
+        direction = np.random.randn(bh, bw, c)
+        direction = direction / (np.linalg.norm(direction) + 1e-8) * epsilon
+
+        # Try positive direction
+        candidate = best_array.copy()
+        candidate[by:by+bh, bx:bx+bw] += direction
+        candidate = np.clip(candidate, 0, 255)
+
+        _save_temp(candidate, output_path)
+        check = check_ai_api(output_path, verbose=False)
+        result["queries_used"] += 1
+
+        if check.get("error"):
+            if verbose:
+                print(f"  [{i+1}] API error, skipping")
+            continue
+
+        new_score = check["ai_probability"] / 100.0
+
+        if new_score < current_score:
+            # Positive direction helped
+            best_array = candidate
+            improvement = (current_score - new_score) * 100
+            current_score = new_score
+            if verbose:
+                print(f"  [{i+1}] {current_score*100:.1f}% (-{improvement:.1f}) block({by},{bx})")
+        else:
+            # Try negative direction
+            candidate = best_array.copy()
+            candidate[by:by+bh, bx:bx+bw] -= direction
+            candidate = np.clip(candidate, 0, 255)
+
+            _save_temp(candidate, output_path)
+            check = check_ai_api(output_path, verbose=False)
+            result["queries_used"] += 1
+
+            if check.get("error"):
+                continue
+
+            new_score = check["ai_probability"] / 100.0
+            if new_score < current_score:
+                best_array = candidate
+                improvement = (current_score - new_score) * 100
+                current_score = new_score
+                if verbose:
+                    print(f"  [{i+1}] {current_score*100:.1f}% (-{improvement:.1f}) block({by},{bx}) [reverse]")
+            else:
+                if verbose and (i % 5 == 0):
+                    print(f"  [{i+1}] {current_score*100:.1f}% (no improvement)")
+
+        if current_score <= target_score:
+            if verbose:
+                print(f"  Target reached!")
+            break
+
+    # Save final result
+    _save_temp(best_array, output_path)
+
+    # Measure perturbation magnitude
+    diff = best_array - img_array
+    l2 = np.sqrt(np.mean(diff ** 2))
+
+    result["final_score"] = round(current_score * 100, 1)
+    result["success"] = current_score <= target_score
+    result["perturbation_l2"] = round(l2, 3)
+
+    if verbose:
+        print(f"[adversarial] Done: {result['initial_score']}% → {result['final_score']}%")
+        print(f"[adversarial] Queries: {result['queries_used']}, L2 perturbation: {l2:.3f}")
+        print(f"[adversarial] {'SUCCESS' if result['success'] else 'PARTIAL — may need more queries'}")
+
+    return result
+
+
+def _save_temp(img_array: np.ndarray, path: str):
+    """Save numpy array as JPEG for API checking."""
+    from PIL import Image
+    Image.fromarray(np.clip(img_array, 0, 255).astype(np.uint8)).save(
+        path, format="JPEG", quality=92, subsampling="4:2:0"
+    )
+
+
+def adversarial_pgd(input_path: str, output_path: str,
+                    epsilon: float = 8.0/255, alpha: float = 1.0/255,
+                    n_steps: int = 40, jpeg_quality: int = 95,
+                    verbose: bool = True) -> dict:
+    """
+    White-box PGD adversarial attack using open-source AI detector as proxy.
+    Generates imperceptible perturbations (L_inf < 8/255) that fool neural
+    network AI detectors into classifying the image as human/real.
+
+    Requires: pip install torch transformers
+    Model: umm-maybe/AI-image-detector (~500MB, downloaded on first run)
+    """
+    try:
+        import torch
+        from transformers import AutoModelForImageClassification, AutoImageProcessor
+    except ImportError:
+        return {"error": "PyTorch + transformers required. Run: pip install torch transformers"}
+
+    result = {"input": input_path, "output": output_path}
+
+    if verbose:
+        print("[PGD] Loading AI detector model...")
+    model_name = "umm-maybe/AI-image-detector"
+    model = AutoModelForImageClassification.from_pretrained(model_name)
+    processor = AutoImageProcessor.from_pretrained(model_name)
+    model.eval()
+    # class 0 = artificial, class 1 = human
+
+    img = Image.open(input_path).convert("RGB")
+    original_size = img.size
+    inputs = processor(images=img, return_tensors="pt")
+    pv = inputs["pixel_values"].clone().requires_grad_(True)
+
+    p = torch.softmax(model(pixel_values=pv).logits, dim=-1)
+    result["before"] = {"human": round(p[0, 1].item(), 3), "ai": round(p[0, 0].item(), 3)}
+    if verbose:
+        print(f"[PGD] Before: human={p[0,1]:.1%}, AI={p[0,0]:.1%}")
+
+    # PGD: maximize human class (index 1)
+    adv = pv.clone().detach().requires_grad_(True)
+    for step in range(n_steps):
+        out = model(pixel_values=adv)
+        loss = out.logits[0, 1]
+        loss.backward()
+        with torch.no_grad():
+            adv = adv + alpha * adv.grad.sign()
+            delta = torch.clamp(adv - pv.detach(), min=-epsilon, max=epsilon)
+            adv = torch.clamp(pv.detach() + delta, min=0, max=1)
+            adv = adv.clone().detach().requires_grad_(True)
+
+    p2 = torch.softmax(model(pixel_values=adv).logits, dim=-1)
+    if verbose:
+        print(f"[PGD] After {n_steps} steps: human={p2[0,1]:.1%}, AI={p2[0,0]:.1%}")
+
+    # Save as JPEG
+    adv_np = adv.squeeze(0).permute(1, 2, 0).detach().numpy()
+    mean, std = np.array(processor.image_mean), np.array(processor.image_std)
+    adv_np = np.clip((adv_np * std + mean) * 255, 0, 255).astype(np.uint8)
+    adv_img = Image.fromarray(adv_np).resize(original_size, Image.LANCZOS)
+    adv_img.save(output_path, format="JPEG", quality=jpeg_quality, subsampling="4:2:0")
+
+    # Verify after JPEG round-trip
+    v = processor(images=Image.open(output_path), return_tensors="pt")
+    fp = torch.softmax(model(pixel_values=v["pixel_values"]).logits, dim=-1)
+    result["after_jpeg"] = {"human": round(fp[0, 1].item(), 3), "ai": round(fp[0, 0].item(), 3)}
+    result["success"] = fp[0, 1].item() > 0.8
+    result["epsilon"] = round(epsilon * 255, 1)
+
+    if verbose:
+        print(f"[PGD] After JPEG: human={fp[0,1]:.1%}, AI={fp[0,0]:.1%}")
+        print(f"[PGD] Perturbation: L_inf={epsilon*255:.0f}/255 (invisible)")
+        print(f"[PGD] {'SUCCESS' if result['success'] else 'PARTIAL'}")
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # External AI detection API check
 # ---------------------------------------------------------------------------
 
