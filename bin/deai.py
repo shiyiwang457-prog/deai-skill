@@ -269,19 +269,19 @@ PRESETS = {
     },
     "illust-medium": {
         "mode": "illustration",
-        "noise_intensity": 0.006,
-        "noise_color_ratio": 0.2,
+        "noise_intensity": 0.004,
+        "noise_color_ratio": 0.15,
         "variable_blur_strength": 0.0,
         "chromatic_aberration": 0.0,
         "vignette_strength": 0.0,
-        "fft_perturbation": 0.2,
+        "fft_perturbation": 0.15,
         "micro_distortion": 0.0,
-        "jpeg_quality": 91,
+        "jpeg_quality": 92,
         "hot_pixel_count": 0,
         "banding_strength": 0.0,
-        "paper_texture": 0.5,
-        "gradient_break": 0.4,
-        "micro_jitter": 0.4,
+        "paper_texture": 0.3,
+        "gradient_break": 0.25,
+        "micro_jitter": 0.25,
         "invisible_wm_disrupt": 0.5,
         "color_correction": 0.4,
         "double_compression": True,
@@ -1754,7 +1754,7 @@ def process_image(input_path: str, output_path: str, preset: str = "medium",
     saved_array = np.array(saved_img)
     saved_array = roughen_histogram(saved_array, strength=roughen_strength)
     # Q75 creates enough DCT quantization artifacts for natural histogram roughness
-    final_q = max(72, config["jpeg_quality"] - 18)
+    final_q = max(85, config["jpeg_quality"] - 6)
     roughened_img = Image.fromarray(saved_array)
     save_kwargs = {"format": "JPEG", "quality": final_q, "subsampling": "4:2:0"}
     if exif_bytes:
